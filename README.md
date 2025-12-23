@@ -55,12 +55,12 @@ Transform your SQL DDL statements into beautiful, interactive diagrams instantly
 ## 📸 Screenshots
 
 ### Extension Overview
-![DDL Viewer Overview](https://raw.githubusercontent.com/YOUR_USERNAME/DDL_Viewer/main/media/Overview.png)
+![DDL Viewer Overview](media/Overview.png)
 
 *The complete DDL Viewer interface with SQL editor and interactive diagram*
 
 ### Complex CTE Pipeline Visualization
-![CTE Pipeline](https://raw.githubusercontent.com/YOUR_USERNAME/DDL_Viewer/main/media/CTE_Views.png)
+![CTE Pipeline](media/CTE_Views.png)
 
 *Visualize complex data flows through multiple CTEs with color-coded lineage*
 
@@ -185,40 +185,9 @@ Currently, DDL Viewer works out-of-the-box with no configuration needed. Future 
 - Auto-generation settings
 - Export formats
 
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📋 Roadmap
-
-- [ ] Export diagrams as PNG/SVG
-- [ ] Support for ALTER TABLE statements
-- [ ] Database reverse engineering (connect to live DB)
-- [ ] Custom color themes
-- [ ] Collaborative editing
-- [ ] AI-powered schema suggestions
-
-## 🐛 Known Issues
-
-- Very large schemas (100+ tables) may experience performance issues
-- Some complex nested CTEs might not parse correctly
-- Circular foreign key references are not yet handled
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 💬 Feedback & Support
-
-- **Issues**: [GitHub Issues](https://github.com/YOUR_USERNAME/DDL_Viewer/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/YOUR_USERNAME/DDL_Viewer/discussions)
-- **Email**: your.email@example.com
 
 ## 🌟 Show Your Support
 
@@ -226,10 +195,9 @@ If you find DDL Viewer helpful, please consider:
 - ⭐ Starring the repository
 - 📢 Sharing with your team
 - 💬 Leaving a review on the VS Code Marketplace
-- ☕ [Buy me a coffee](https://buymeacoffee.com/yourname)
 
 ---
 
-**Made with ❤️ by [Your Name]**
+**Made with ❤️ by [Mahesh]**
 
 *Visualize your data, understand your schema, build better databases.*
