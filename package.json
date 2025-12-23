@@ -3,20 +3,16 @@
     "displayName": "DDL Viewer - SQL Schema Visualizer",
     "description": "Transform SQL DDL into beautiful interactive diagrams. Visualize tables, views, CTEs, and column-level lineage with ease.",
     "version": "0.0.1",
-    "publisher": "YOUR_PUBLISHER_NAME",
-    "author": {
-        "name": "Your Name",
-        "email": "your.email@example.com"
-    },
+    "publisher": "MaheshG",
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/YOUR_USERNAME/DDL_Viewer"
+        "url": "https://github.com/MaheshGachale/SQL_DDL_Viewer"
     },
     "bugs": {
-        "url": "https://github.com/YOUR_USERNAME/DDL_Viewer/issues"
+        "url": "https://github.com/MaheshGachale/SQL_DDL_Viewer/issues"
     },
-    "homepage": "https://github.com/YOUR_USERNAME/DDL_Viewer#readme",
+    "homepage": "https://github.com/MaheshGachale/SQL_DDL_Viewer#readme",
     "keywords": [
         "sql",
         "ddl",
