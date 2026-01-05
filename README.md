@@ -161,6 +161,8 @@ WHERE total_orders > 0;
 |---------|---------|
 | 🔑 | Primary Key |
 | 🔗 | Foreign Key |
+| GB | Group By |
+| SK | Sort Key |
 | 🟦 Blue Border | View/Materialized View |
 | 🟪 Purple Dashed | Common Table Expression (CTE) |
 | ⚪ Gray Dashed | Stub Table (undefined reference) |

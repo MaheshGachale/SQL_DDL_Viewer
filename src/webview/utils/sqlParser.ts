@@ -6,6 +6,8 @@ interface Column {
     type: string;
     isPk: boolean;
     isFk: boolean;
+    isGrouping?: boolean;
+    isSortKey?: boolean;
 }
 
 interface TableData {
@@ -41,6 +43,21 @@ const splitByCommas = (str: string): string[] => {
 
 const cleanIdentifier = (id: string) => id.replace(/["`\[\]]/g, '').trim();
 
+// Keywords to ignore when discovering potential columns or aliases
+const SQL_KEYWORDS = new Set([
+    'SELECT', 'FROM', 'WHERE', 'GROUP', 'BY', 'ORDER', 'HAVING', 'LIMIT', 'OFFSET',
+    'JOIN', 'ON', 'AS', 'AND', 'OR', 'NOT', 'IN', 'IS', 'NULL', 'CASE', 'WHEN',
+    'THEN', 'ELSE', 'END', 'DISTINCT', 'ALL', 'UNION', 'EXCEPT', 'INTERSECT',
+    'WITH', 'RECURSIVE', 'MATERIALIZED', 'VIEW', 'TABLE', 'CREATE', 'DROP',
+    'ALTER', 'TRUNCATE', 'INSERT', 'UPDATE', 'DELETE', 'DEFAULT', 'PRIMARY',
+    'KEY', 'FOREIGN', 'REFERENCES', 'CONSTRAINT', 'INDEX', 'CHECK', 'DISTSTYLE',
+    'DISTKEY', 'SORTKEY', 'COMPOUND', 'INTERLEAVED', 'EVEN', 'AUTO', 'REFRESH',
+    'BACKUP', 'ENCODING', 'LATERAL', 'WINDOW', 'QUALIFY', 'OVER', 'UNNEST', 'APPLY',
+    'TOP', 'COUNT', 'MIN', 'MAX', 'AVG', 'SUM',
+    'LEAD', 'LAG', 'PARTITION', 'RANK', 'DENSE_RANK', 'ROW_NUMBER',
+    'FIRST_VALUE', 'LAST_VALUE', 'NTH_VALUE', 'COALESCE', 'ABS', 'DRIFT', 'STABLE'
+]);
+
 // --- HELPER: Extracts logic for ANY Select body (Used for Views and CTEs) ---
 const parseSelectBody = (
     name: string,
@@ -68,45 +85,53 @@ const parseSelectBody = (
         const fullTableName = cleanIdentifier(tMatch[1]);
         const alias = tMatch[2] ? cleanIdentifier(tMatch[2]) : null;
 
+        if (fullTableName.toUpperCase() === 'UNNEST') continue;
+
         const upperAlias = alias ? alias.toUpperCase() : '';
-        if (alias && !['ON', 'USING', 'WHERE', 'GROUP', 'ORDER', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'LATERAL', 'LIMIT', 'OFFSET', 'WINDOW', 'QUALIFY', 'OVER'].includes(upperAlias)) {
+        const upperTable = fullTableName.toUpperCase();
+
+        if (SQL_KEYWORDS.has(upperTable)) continue;
+
+        referencedTables.add(fullTableName);
+        aliasMap.set(fullTableName, fullTableName); // Identity map
+
+        if (alias && !SQL_KEYWORDS.has(upperAlias)) {
             aliasMap.set(alias, fullTableName);
-            referencedTables.add(fullTableName);
-        } else {
-            referencedTables.add(fullTableName);
-            const parts = fullTableName.split('.');
+        }
+
+        // Also map the last part of a schema-qualified name as an alias
+        const parts = fullTableName.split('.');
+        if (parts.length > 1) {
             aliasMap.set(parts[parts.length - 1], fullTableName);
         }
     }
 
     // Comma Join Discovery (e.g., FROM T1, T2)
-    const fromPartsMatch = body.match(/FROM\s+([\s\S]+?)(?:WHERE|GROUP|ORDER|JOIN|APPLY|UNNEST|LIMIT|OFFSET|FETCH|FOR|QUALIFY|WINDOW|$)/i);
+    // Added word boundaries \b to keywords to avoid truncation if table names contain keyword substrings (e.g., "limits")
+    const fromPartsMatch = body.match(/FROM\s+([\s\S]+?)(?:\bWHERE\b|\bGROUP\b|\bORDER\b|\bJOIN\b|\bAPPLY\b|\bUNNEST\b|\bLIMIT\b|\bOFFSET\b|\bFETCH\b|\bFOR\b|\bQUALIFY\b|\bWINDOW\b|$)/i);
     if (fromPartsMatch) {
         const potentialTables = splitByCommas(fromPartsMatch[1]);
         potentialTables.forEach(pt => {
             const parts = pt.trim().split(/\s+/);
             if (parts.length > 0) {
                 const tName = cleanIdentifier(parts[0]);
-                if (tName && !['SELECT', '(', 'CASE', 'WHEN'].includes(tName.toUpperCase())) {
+                if (tName && !SQL_KEYWORDS.has(tName.toUpperCase()) && tName !== '(') {
                     referencedTables.add(tName);
+                    aliasMap.set(tName, tName);
+
                     const alias = parts.length > 1 ? cleanIdentifier(parts[parts.length - 1]) : null;
-                    if (alias && !['AS', 'ON', 'WHERE', 'JOIN'].includes(alias.toUpperCase())) aliasMap.set(alias, tName);
-                    else {
+                    if (alias && !SQL_KEYWORDS.has(alias.toUpperCase())) {
+                        aliasMap.set(alias, tName);
+                    } else {
                         const bits = tName.split('.');
-                        aliasMap.set(bits[bits.length - 1], tName);
+                        if (bits.length > 1) aliasMap.set(bits[bits.length - 1], tName);
                     }
                 }
             }
         });
     }
 
-    // Secondary scan for subqueries and nested joins
-    const deepTableMatch = body.matchAll(/(?:FROM|JOIN|APPLY)\s+((?:["`\[][^"`\]]+["`\]]|[\w.]+))/gmi);
-    for (const m of deepTableMatch) {
-        referencedTables.add(cleanIdentifier(m[1]));
-    }
-
-    // 2. Extract Columns (Balance-aware extraction to handle subqueries in select list)
+    // 2. Extract Columns
     const selectKeywordRegex = /SELECT\s+(?:DISTINCT\s+|ALL\s+|TOP\s+\d+\s+)?/i;
     const selectKeywordMatch = body.match(selectKeywordRegex);
 
@@ -118,7 +143,12 @@ const parseSelectBody = (
             if (body[i] === '(') balance++;
             else if (body[i] === ')') balance--;
             else if (balance === 0) {
-                if (body.substring(i).toUpperCase().startsWith('FROM')) {
+                if (body.substring(i, i + 5).toUpperCase() === 'FROM ') { // Exact match with space to avoid keywords like FROM_
+                    mainFromIdx = i;
+                    break;
+                }
+                const lookahead = body.substring(i).toUpperCase();
+                if (lookahead.startsWith('FROM\n') || lookahead.startsWith('FROM\r') || lookahead === 'FROM') {
                     mainFromIdx = i;
                     break;
                 }
@@ -126,6 +156,31 @@ const parseSelectBody = (
         }
         const selectList = mainFromIdx !== -1 ? body.substring(selectStart, mainFromIdx) : body.substring(selectStart);
         const columnDefs = splitByCommas(selectList);
+
+        // 2a. Check for SELECT *
+        columnDefs.forEach(colDef => {
+            if (colDef.trim() === '*' || colDef.trim().endsWith('.*')) {
+                const starMatch = colDef.trim().match(/^(?:((?:["`\[][^"`\]]+["`\]]|[\w.]+))\.)?\*/);
+                if (starMatch) {
+                    const al = starMatch[1] ? cleanIdentifier(starMatch[1]) : null;
+                    if (al && aliasMap.has(al)) {
+                        const tName = aliasMap.get(al)!;
+                        if (!cteNames.has(tName)) {
+                            if (!discoveredTableColumns.has(tName)) discoveredTableColumns.set(tName, new Set());
+                            discoveredTableColumns.get(tName)!.add('*');
+                        }
+                    } else if (!al && referencedTables.size > 0) {
+                        // Smart Discovery: Assign * to ALL referenced tables if unaliased
+                        referencedTables.forEach(tName => {
+                            if (!cteNames.has(tName)) {
+                                if (!discoveredTableColumns.has(tName)) discoveredTableColumns.set(tName, new Set());
+                                discoveredTableColumns.get(tName)!.add('*');
+                            }
+                        });
+                    }
+                }
+            }
+        });
 
         columnDefs.forEach(colDef => {
             colDef = colDef.trim();
@@ -136,20 +191,23 @@ const parseSelectBody = (
             if (asMatch) colName = cleanIdentifier(asMatch[1]);
             else if (simpleSpaceMatch) {
                 const candidate = cleanIdentifier(simpleSpaceMatch[1]);
-                if (!['DISTINCT', '*', 'ALL', 'TOP'].includes(candidate.toUpperCase())) colName = candidate;
+                if (!SQL_KEYWORDS.has(candidate.toUpperCase())) colName = candidate;
             }
 
-            const isCalculation = /[\(\)\*\+\/\-]|CASE|OVER|RANK|NTILE|ROW_NUMBER|SUM|COUNT|AVG|MIN|MAX|QUALIFY|ARRAY|UNNEST|QUALIFY/i.test(colDef.replace(/AS\s+[\s\S]+$/i, ''));
+            const definitionWithoutAlias = colDef.replace(/(?:AS\s+)?(?:["`\[][^"`\]]+["`\]]|[\w]+)$/i, '').trim();
+            const isCalculation = /[\(\)\*\+\/\-]|CASE|OVER|RANK|LEAD|LAG|PARTITION|COALESCE|ABS|NTILE|ROW_NUMBER|SUM|COUNT|AVG|MIN|MAX|QUALIFY|ARRAY|UNNEST/i.test(definitionWithoutAlias);
             let formula = '';
 
-            const lineageUsageRegex = /(?:(["`\[][^"`\]]+["`\]]|[\w]+)\.)?(["`\[][^"`\]]+["`\]]|[\w]+)/g;
+            const lineageUsageRegex = /(?:(["`\[][^"`\]]+["`\]]|[\w.]+)\.)?(["`\[][^"`\]]+["`\]]|[\w]+)/g;
 
             if (isCalculation) {
-                formula = colDef.replace(/AS\s+[\s\S]+$/i, '').trim();
+                formula = definitionWithoutAlias;
                 let usage;
                 while ((usage = lineageUsageRegex.exec(formula)) !== null) {
                     const al = usage[1] ? cleanIdentifier(usage[1]) : null;
                     const col = cleanIdentifier(usage[2]);
+                    if (SQL_KEYWORDS.has(col.toUpperCase())) continue;
+
                     if (al && aliasMap.has(al)) {
                         const tName = aliasMap.get(al)!;
                         if (!colName) colName = col;
@@ -158,9 +216,16 @@ const parseSelectBody = (
                             if (!discoveredTableColumns.has(tName)) discoveredTableColumns.set(tName, new Set());
                             discoveredTableColumns.get(tName)!.add(col);
                         }
-                    } else if (!al && referencedTables.size === 1) {
-                        const tName = Array.from(referencedTables)[0];
+                    } else if (!al && referencedTables.size > 0) {
+                        // Smart Discovery: Assign to ALL referenced tables if unaliased
+                        referencedTables.forEach(tName => {
+                            if (!cteNames.has(tName)) {
+                                if (!discoveredTableColumns.has(tName)) discoveredTableColumns.set(tName, new Set());
+                                discoveredTableColumns.get(tName)!.add(col);
+                            }
+                        });
                         if (!colName) colName = col;
+                        const tName = Array.from(referencedTables)[0];
                         columnLineage.push({ sourceTable: tName, sourceCol: col, targetCol: colName || col, formula: 'ƒx' });
                     }
                 }
@@ -179,8 +244,16 @@ const parseSelectBody = (
                             discoveredTableColumns.get(tName)!.add(col);
                         }
                     }
-                } else if (referencedTables.size === 1) {
+                } else if (referencedTables.size > 0) { // Changed from === 1 to > 0
                     const col = cleanIdentifier(colDef.split(/\s+/)[0]);
+                    // Smart Discovery: Assign to ALL referenced tables if unaliased
+                    referencedTables.forEach(tName => {
+                        if (!cteNames.has(tName)) {
+                            if (!discoveredTableColumns.has(tName)) discoveredTableColumns.set(tName, new Set());
+                            discoveredTableColumns.get(tName)!.add(col);
+                        }
+                    });
+                    // For lineage, pick the first referenced table as a representative if multiple exist and no alias
                     const tName = Array.from(referencedTables)[0];
                     if (!colName) colName = col;
                     columnLineage.push({ sourceTable: tName, sourceCol: col, targetCol: colName, formula: '' });
@@ -192,6 +265,8 @@ const parseSelectBody = (
                 colName = cleanIdentifier(parts[parts.length - 1]);
             }
 
+            if (colName === '*' || colName.toUpperCase() === 'SELECT') return;
+
             viewColumns.push({
                 name: colName,
                 type: isCte ? 'Start' : (isCalculation ? 'Calculated' : 'Mapped'),
@@ -201,32 +276,49 @@ const parseSelectBody = (
         });
 
         // --- GLOBAL COLUMN DISCOVERY ---
-        // Scan the entire body (Subqueries, WHERE, JOIN, ON clauses) to find columns for stub discovery
-        const globalLineageRegex = /(?:(["`\[][^"`\]]+["`\]]|[\w]+)\.)?(["`\[][^"`\]]+["`\]]|[\w]+)/g;
+        const globalLineageRegex = /(?:(["`\[][^"`\]]+["`\]]|[\w.]+)\.)?(["`\[][^"`\]]+["`\]]|[\w]+)/g;
         let globalMatch;
         while ((globalMatch = globalLineageRegex.exec(body)) !== null) {
             const al = globalMatch[1] ? cleanIdentifier(globalMatch[1]) : null;
             const col = cleanIdentifier(globalMatch[2]);
+            if (SQL_KEYWORDS.has(col.toUpperCase()) || col === '*') continue;
+
             if (al && aliasMap.has(al)) {
                 const tName = aliasMap.get(al)!;
                 if (!cteNames.has(tName)) {
                     if (!discoveredTableColumns.has(tName)) discoveredTableColumns.set(tName, new Set());
                     discoveredTableColumns.get(tName)!.add(col);
                 }
-            } else if (!al && referencedTables.size === 1) {
-                const tName = Array.from(referencedTables)[0];
-                if (!discoveredTableColumns.has(tName)) discoveredTableColumns.set(tName, new Set());
-                discoveredTableColumns.get(tName)!.add(col);
+            } else if (!al && referencedTables.size > 0) {
+                // Smart Discovery: Assign to ALL referenced tables if unaliased
+                referencedTables.forEach(tName => {
+                    if (!cteNames.has(tName)) {
+                        if (!discoveredTableColumns.has(tName)) discoveredTableColumns.set(tName, new Set());
+                        discoveredTableColumns.get(tName)!.add(col);
+                    }
+                });
             }
+        }
+
+        // --- GROUP BY DISCOVERY ---
+        const groupByMatch = body.match(/GROUP\s+BY\s+([\s\S]+?)(?:HAVING|ORDER|LIMIT|OFFSET|FETCH|FOR|QUALIFY|WINDOW|$)/i);
+        if (groupByMatch) {
+            const groupByCols = splitByCommas(groupByMatch[1]).map(c => {
+                const parts = c.trim().split(/[.\s]+/);
+                return cleanIdentifier(parts[parts.length - 1]);
+            });
+            viewColumns.forEach(vcol => {
+                if (groupByCols.some(gc => gc.toLowerCase() === vcol.name.toLowerCase())) {
+                    vcol.isGrouping = true;
+                }
+            });
         }
     } else {
         viewColumns.push({ name: 'Unknown Cols', type: 'SQL', isPk: false, isFk: false });
     }
 
     referencedTables.forEach(ref => {
-        if (ref.toUpperCase() !== 'UNNEST') {
-            fks.push({ col: '', refTable: ref, refCol: '' });
-        }
+        fks.push({ col: '', refTable: ref, refCol: '' });
     });
 
     return {
@@ -254,9 +346,9 @@ export const parseSqlToElements = (sql: string) => {
 
         if (strippedBody.toUpperCase().startsWith('WITH')) {
             currentOffset = 4;
-            if (strippedBody.substring(currentOffset).trim().toUpperCase().startsWith('RECURSIVE')) {
-                const recMatch = strippedBody.substring(currentOffset).match(/\s*RECURSIVE/i);
-                currentOffset += recMatch ? recMatch[0].length : 0;
+            const maybeRecursive = strippedBody.substring(currentOffset).trim().toUpperCase();
+            if (maybeRecursive.startsWith('RECURSIVE')) {
+                currentOffset += 10;
             }
 
             let parsingCtes = true;
@@ -303,14 +395,19 @@ export const parseSqlToElements = (sql: string) => {
     };
 
     statements.forEach(stmt => {
-        const createTableMatch = stmt.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:["`\[][^"`\]]+["`\]]|[\w.]+))\s*(?:\(([\s\S]*)\)|AS\s+([\s\S]*))/i);
-        const createViewMatch = stmt.match(/CREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:["`\[][^"`\]]+["`\]]|[\w.]+))\s+AS\s+([\s\S]*)/i);
+        const createTableMatch = stmt.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:["`\[][^"`\]]+["`\]]|[\w.]+))\s*([\s\S]*?)(?:\(([\s\S]*)\)|\bAS\b\s+([\s\S]*))/i);
+        const createViewMatch = stmt.match(/CREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:["`\[][^"`\]]+["`\]]|[\w.]+))\s*([\s\S]*?)\bAS\b\s+([\s\S]*)/i);
 
         if (createTableMatch) {
             const fullTableName = cleanIdentifier(createTableMatch[1]);
             existingTableNames.add(fullTableName);
-            const columnsBody = createTableMatch[2];
-            const asSelectBody = createTableMatch[3];
+            const middlePart = createTableMatch[2] || '';
+            const columnsBody = createTableMatch[3];
+            const asSelectBody = createTableMatch[4];
+
+            // Extract SORTKEY from middle part
+            const sortKeyMatch = middlePart.match(/SORTKEY\s*\(([\s\S]+?)\)/i);
+            const sortKeyCols = sortKeyMatch ? splitByCommas(sortKeyMatch[1]).map(c => cleanIdentifier(c)) : [];
 
             if (columnsBody) {
                 const definitions = splitByCommas(columnsBody);
@@ -330,25 +427,50 @@ export const parseSqlToElements = (sql: string) => {
                     } else if (!def.toUpperCase().startsWith('CONSTRAINT') && !def.toUpperCase().startsWith('KEY') && !def.toUpperCase().startsWith('INDEX') && !def.toUpperCase().startsWith('CHECK')) {
                         const parts = def.split(/\s+/);
                         const colName = cleanIdentifier(parts[0]);
-                        const colType = parts.slice(1).join(' ').split(/(\s|,\s|\))/)[0];
-                        const isPk = /PRIMARY\s+KEY/i.test(def);
-                        const isFk = /REFERENCES/i.test(def);
-                        if (isFk) {
-                            const refMatch = def.match(/REFERENCES\s+((?:["`\[][^"`\]]+["`\]]|[\w.]+))\s*\(["`\[]?(\w+)["`\]]?\)/i);
-                            if (refMatch) fks.push({ col: colName, refTable: cleanIdentifier(refMatch[1]), refCol: refMatch[2] });
+                        if (!SQL_KEYWORDS.has(colName.toUpperCase())) {
+                            const colType = parts.slice(1).join(' ').split(/(\s|,\s|\))/)[0];
+                            const isPk = /PRIMARY\s+KEY/i.test(def);
+                            const isFk = /REFERENCES/i.test(def);
+                            const isSortKey = sortKeyCols.some(sk => sk.toLowerCase() === colName.toLowerCase());
+                            if (isFk) {
+                                const refMatch = def.match(/REFERENCES\s+((?:["`\[][^"`\]]+["`\]]|[\w.]+))\s*\(["`\[]?(\w+)["`\]]?\)/i);
+                                if (refMatch) fks.push({ col: colName, refTable: cleanIdentifier(refMatch[1]), refCol: refMatch[2] });
+                            }
+                            columns.push({ name: colName, type: colType || 'TEXT', isPk, isFk, isSortKey });
                         }
-                        columns.push({ name: colName, type: colType || 'TEXT', isPk, isFk });
                     }
                 });
                 tables.push({ name: fullTableName, columns, fks });
             } else if (asSelectBody) {
                 parseWithCtes(asSelectBody, fullTableName, false);
+                const table = tables.find(t => t.name === fullTableName);
+                if (table && sortKeyCols.length > 0) {
+                    table.columns.forEach(c => {
+                        if (sortKeyCols.some(sk => sk.toLowerCase() === c.name.toLowerCase())) {
+                            c.isSortKey = true;
+                        }
+                    });
+                }
             }
         } else if (createViewMatch) {
             const fullViewName = cleanIdentifier(createViewMatch[1]);
             existingTableNames.add(fullViewName);
-            const body = createViewMatch[2];
+            const middlePart = createViewMatch[2] || '';
+            const body = createViewMatch[3];
+
+            // Extract SORTKEY from middle part
+            const sortKeyMatch = middlePart.match(/SORTKEY\s*\(([\s\S]+?)\)/i);
+            const sortKeyCols = sortKeyMatch ? splitByCommas(sortKeyMatch[1]).map(c => cleanIdentifier(c)) : [];
+
             parseWithCtes(body, fullViewName, true);
+            const view = tables.find(t => t.name === fullViewName);
+            if (view && sortKeyCols.length > 0) {
+                view.columns.forEach(c => {
+                    if (sortKeyCols.some(sk => sk.toLowerCase() === c.name.toLowerCase())) {
+                        c.isSortKey = true;
+                    }
+                });
+            }
         } else if (stmt.toUpperCase().startsWith('WITH') || stmt.toUpperCase().startsWith('SELECT')) {
             parseWithCtes(stmt, "Query Result", true);
         }
@@ -364,9 +486,17 @@ export const parseSqlToElements = (sql: string) => {
                 if (!definedNames.has(ref) && !existingTableNames.has(ref)) {
                     let stubCols: Column[] = [];
                     if (discoveredTableColumns.has(ref)) {
-                        stubCols = Array.from(discoveredTableColumns.get(ref)!).map(c => ({
-                            name: c, type: 'Source', isPk: false, isFk: false
-                        }));
+                        const cols = discoveredTableColumns.get(ref)!;
+                        if (cols.has('*') && cols.size === 1) {
+                            stubCols = [{ name: 'All Columns (*)', type: 'Source', isPk: false, isFk: false }];
+                        } else {
+                            stubCols = Array.from(cols).filter(c => c !== '*').map(c => ({
+                                name: c, type: 'Source', isPk: false, isFk: false
+                            }));
+                            if (cols.has('*')) {
+                                stubCols.push({ name: '... (others)', type: 'Source', isPk: false, isFk: false });
+                            }
+                        }
                     }
                     if (stubCols.length === 0) stubCols = [{ name: 'Unknown Schema', type: 'Stub', isPk: false, isFk: false }];
                     stubTables.push({ name: ref, columns: stubCols, fks: [] });
@@ -389,7 +519,7 @@ export const parseSqlToElements = (sql: string) => {
         nodes.push({
             id: table.name,
             type: 'table',
-            data: { label: table.name, columns: table.columns, isView: table.isView },
+            data: { label: table.name, columns: table.columns, isView: table.isView, isCte: table.isCte },
             position: { x: 0, y: 0 },
             style
         });
@@ -413,7 +543,7 @@ export const parseSqlToElements = (sql: string) => {
                     target: table.name,
                     sourceHandle: `src-${lin.sourceCol}`,
                     targetHandle: `tgt-${lin.targetCol}`,
-                    label: lin.formula || '',
+                    label: lin.formula ? 'ƒx' : '',
                     type: 'default',
                     style: { stroke, strokeWidth: 2 },
                     markerEnd: { type: MarkerType.ArrowClosed, color: stroke },

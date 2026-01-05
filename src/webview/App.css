@@ -170,3 +170,15 @@ pre[class*="language-"] {
     color: #3b82f6;
     border: 1px solid #bfdbfe;
 }
+
+.icon-gb {
+    background-color: #f0fdf4;
+    color: #16a34a;
+    border: 1px solid #bbf7d0;
+}
+
+.icon-sk {
+    background-color: #f5f3ff;
+    color: #8b5cf6;
+    border: 1px solid #ddd6fe;
+}

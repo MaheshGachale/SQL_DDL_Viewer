@@ -6,6 +6,8 @@ interface Column {
     type: string;
     isPk?: boolean;
     isFk?: boolean;
+    isGrouping?: boolean;
+    isSortKey?: boolean;
 }
 
 interface TableNodeData {
@@ -36,6 +38,8 @@ const TableNode = ({ data }: { data: TableNodeData }) => {
                         <div className="column-name">
                             {col.isPk && <span className="icon-pk" title="Primary Key">PK</span>}
                             {col.isFk && <span className="icon-fk" title="Foreign Key">FK</span>}
+                            {col.isGrouping && <span className="icon-gb" title="Group By">GB</span>}
+                            {col.isSortKey && <span className="icon-sk" title="Sort Key">SK</span>}
                             <span>{col.name}</span>
                         </div>
                         <span className="column-type">{col.type}</span>
