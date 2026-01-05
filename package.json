@@ -2,7 +2,7 @@
     "name": "ddl-viewer",
     "displayName": "DDL Viewer - SQL Schema Visualizer",
     "description": "Transform SQL DDL into beautiful interactive diagrams. Visualize tables, views, CTEs, and column-level lineage with ease.",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "publisher": "MaheshG",
     "license": "MIT",
     "repository": {
@@ -43,6 +43,10 @@
         "color": "#1e1e1e",
         "theme": "dark"
     },
+    "activationEvents": [
+        "onCommand:ddl-viewer.start",
+        "onView:ddl-viewer-welcome"
+    ],
     "main": "./dist/extension.js",
     "contributes": {
         "commands": [
